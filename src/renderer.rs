@@ -1885,8 +1885,9 @@ impl Renderer {
                     && fill_rect == rect
                     && fill_radius == radius
                     && tint[3] >= 0.999
-                    && let Some(source) = opaque_frost(path) =>
+                    && opaque_frost(path).is_some() =>
                 {
+                    let source = opaque_frost(path).unwrap();
                     self.frost(source, *rect, *radius, *tint, Some(*fill));
                     merged_next = true;
                     continue;

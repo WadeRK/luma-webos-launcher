@@ -1,4 +1,5 @@
-# \# Luma WebOS Launcher
+# Luma WebOS Launcher
 
-luma\_2.2.160\_all.ipk
+Download: luma_2.2.160_all.ipk" -NoNewline
 
+Set-Content -Path readme.md -Value

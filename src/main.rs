@@ -47,6 +47,9 @@ mod weather_sky;
 mod webos_compat;
 mod widgets;
 mod widgets_state;
+mod storage;
+mod stremio;
+mod typography;
 
 #[cfg(test)]
 mod tests;
@@ -858,6 +861,11 @@ fn compose(
     scene
 }
 
+fn stremio_service() -> &'static stremio::Service {
+    static SERVICE: std::sync::OnceLock<stremio::Service> = std::sync::OnceLock::new();
+    SERVICE.get_or_init(stremio::Service::new)
+}
+
 fn jellyfin_service() -> &'static jellyfin::Service {
     static SERVICE: std::sync::OnceLock<jellyfin::Service> = std::sync::OnceLock::new();
     SERVICE.get_or_init(|| {
@@ -1085,6 +1093,18 @@ fn jellyfin_tick(state: &mut State, preferences_path: &std::path::Path, platform
                     Err(error) => state.notify(error),
                 }
             }
+        }
+    }
+    while let Ok(response) = stremio_service().receiver.lock().unwrap().try_recv() {
+        state.dirty = true;
+        match response {
+            stremio::Response::Items(index, items) => {
+                if state.stack_items.len() <= index {
+                    state.stack_items.resize(index + 1, vec![]);
+                }
+                state.stack_items[index] = items;
+            }
+            stremio::Response::Failed(_, message) => state.notify(message),
         }
     }
 }
@@ -1585,6 +1605,19 @@ fn stacks_refresh(state: &mut State) {
                 state.preferences.jellyfin.clone(),
                 wanted,
             ));
+        }
+    }
+    {
+        let wanted = state
+            .preferences
+            .stacks
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.source == "stremio")
+            .map(|(i, s)| (i, s.collection.clone()))
+            .collect::<Vec<_>>();
+        if !wanted.is_empty() {
+            stremio_service().send(stremio::Command::Fetch(wanted));
         }
     }
     if state.preferences.moonlight.paired {

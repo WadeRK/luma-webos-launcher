@@ -975,12 +975,10 @@ impl Renderer {
         let advance = |c: char| {
             if c == '\n' {
                 0.
+            } else if style.tabular_nums && c.is_ascii_digit() {
+                max_digit + tracking
             } else {
-                if style.tabular_nums && c.is_ascii_digit() {
-                    max_digit + tracking
-                } else {
-                    fonts[&choose_font(c)].metrics(c, size_f).advance_width + tracking
-                }
+                fonts[&choose_font(c)].metrics(c, size_f).advance_width + tracking
             }
         };
         let mut lines: Vec<String> = Vec::new();

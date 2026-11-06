@@ -18,6 +18,7 @@ pub const APP_ID: &str = "tv.stremioorigin.app";
 /// One configured addon. `collection` strings on a "stremio" stack encode
 /// `"<base_url>|<catalog_type>|<catalog_id>"` so no separate per-stack addon
 /// index is needed; see `parse_collection` below.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct StremioAddon {
     pub name: String,
@@ -43,6 +44,7 @@ pub enum Command {
     Fetch(Vec<(usize, String)>),
 }
 
+#[allow(dead_code)]
 pub enum Response {
     Items(usize, Vec<StackItem>),
     /// A fetch failed; `usize` is the stack index so the UI can leave that
@@ -106,6 +108,7 @@ pub fn card_id(item: &str) -> i64 {
 /// Stremio (see state.rs's Target::StackCard handling, which launches the
 /// app directly instead of calling open_movie), but this is kept for
 /// symmetry with jellyfin::owns/plex::owns and in case that changes later.
+#[allow(dead_code)]
 pub fn owns(id: i64) -> bool {
     id & CARD_TAG != 0 && CARD_IDS.lock().unwrap().contains_key(&id)
 }

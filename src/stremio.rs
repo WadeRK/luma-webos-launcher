@@ -118,7 +118,11 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
-fn fetch_one(base_url: &str, catalog_type: &str, catalog_id: &str) -> Result<Vec<StackItem>, String> {
+fn fetch_one(
+    base_url: &str,
+    catalog_type: &str,
+    catalog_id: &str,
+) -> Result<Vec<StackItem>, String> {
     let url = format!(
         "{}/catalog/{catalog_type}/{catalog_id}.json",
         base_url.trim_end_matches('/')

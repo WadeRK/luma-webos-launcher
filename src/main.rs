@@ -32,6 +32,9 @@ mod stacks;
 mod state;
 mod steam;
 mod storage;
+mod storage;
+mod stremio;
+mod typography;
 mod typography;
 mod ui_sound;
 mod vector;
@@ -47,9 +50,6 @@ mod weather_sky;
 mod webos_compat;
 mod widgets;
 mod widgets_state;
-mod storage;
-mod stremio;
-mod typography;
 
 #[cfg(test)]
 mod tests;

@@ -3663,7 +3663,7 @@ impl State {
                     return self.open_library(row, index);
                 }
                 let items = self.stack_items.get(stack).map_or(&[][..], Vec::as_slice);
-		if self.preferences.stacks[stack].source == "stremio" {
+                if self.preferences.stacks[stack].source == "stremio" {
                     // No title-card page: Stremio shows its own source picker.
                     return vec![Effect::Launch(crate::stremio::APP_ID.into())];
                 }

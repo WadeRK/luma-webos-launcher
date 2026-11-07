@@ -133,12 +133,11 @@ fn process_items(
     let mut any_new = false;
     for (card, raw) in cards.iter_mut().zip(&raw_items) {
         if card.poster.is_none() {
-            if let Some(ref url) = raw.poster_url {
-                card.poster =
-                    crate::media::download_as(agent, cache, &format!("stremio-{}", card.id), url);
-                if card.poster.is_some() {
-                    any_new = true;
-                }
+            card.poster = raw.poster_url.as_deref().and_then(|url| {
+                crate::media::download_as(agent, cache, &format!("stremio-{}", card.id), url)
+            });
+            if card.poster.is_some() {
+                any_new = true;
             }
         }
     }

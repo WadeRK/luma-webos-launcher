@@ -106,10 +106,18 @@ fn visible_rows(state: &crate::state::State) -> impl Iterator<Item = (usize, &St
 }
 
 /// (id, name, available now).
-pub const SOURCES: [(&str, &str, bool); 3] = [
+pub const SOURCES: [(&str, &str, bool); 4] = [
     ("moonlight", "Moonlight", true),
+    ("stremio", "Stremio", true),
     ("jellyfin", "Jellyfin", true),
     ("plex", "Plex", true),
+];
+
+pub const STREMIO_COLLECTIONS: [(&str, &str); 4] = [
+    ("continue", "Continue Watching"),
+    ("library", "My Library"),
+    ("trending_movies", "Trending Movies"),
+    ("trending_series", "Trending Series"),
 ];
 /// Games stack categories (Moonlight); history is kept by Luma.
 pub const GAME_COLLECTIONS: [(&str, &str); 4] = [
@@ -124,7 +132,7 @@ pub const OPTION_COUNT: usize = 7;
 /// Sources whose stack options have no Type row and end with a sign-out row:
 /// Collection, Card shape, Show on Home, Move up, Move down, Sign out, Remove.
 pub fn compact(source: &str) -> bool {
-    matches!(source, "moonlight" | "jellyfin" | "plex")
+    matches!(source, "moonlight" | "jellyfin" | "plex" | "stremio")
 }
 pub fn option_count(source: &str) -> usize {
     if source == "moonlight" {
@@ -164,6 +172,17 @@ pub fn collection_choices(state: &crate::state::State, stack: usize) -> Vec<(Str
         .preferences
         .stacks
         .get(stack)
+        .is_some_and(|s| s.source == "stremio")
+    {
+        return STREMIO_COLLECTIONS
+            .iter()
+            .map(|(id, label)| ((*id).to_owned(), (*label).to_owned()))
+            .collect();
+    }
+    if state
+        .preferences
+        .stacks
+        .get(stack)
         .is_some_and(|s| s.source == "plex")
     {
         return crate::plex::COLLECTIONS
@@ -177,6 +196,22 @@ pub fn collection_choices(state: &crate::state::State, stack: usize) -> Vec<(Str
 
 /// Home row title for a collection and type, e.g. "New Movies".
 pub fn row_title(stack: &StackConfig) -> String {
+    if stack.source == "stremio" {
+        return match stack.collection.as_str() {
+            "continue" => "Continue Watching",
+            "library" => "My Library",
+            "trending_movies" => "Trending Movies",
+            "trending_series" => "Trending Series",
+            _ => {
+                if !stack.name.is_empty() {
+                    &stack.name
+                } else {
+                    "Stremio"
+                }
+            }
+        }
+        .to_owned();
+    }
     if stack.source == "moonlight" {
         return match stack.collection.as_str() {
             "recent" => "Recently played",
@@ -199,6 +234,23 @@ pub fn source_name(id: &str) -> &'static str {
         .map_or("Media server", |s| s.1)
 }
 pub fn collection_label(stack: &StackConfig) -> String {
+    if stack.source == "stremio" {
+        return STREMIO_COLLECTIONS
+            .iter()
+            .find(|c| c.0 == stack.collection)
+            .map_or_else(
+                || {
+                    if !stack.list_title.is_empty() {
+                        stack.list_title.clone()
+                    } else if !stack.name.is_empty() {
+                        stack.name.clone()
+                    } else {
+                        "Stremio".to_owned()
+                    }
+                },
+                |c| c.1.to_owned(),
+            );
+    }
     if stack.source == "moonlight" {
         return GAME_COLLECTIONS
             .iter()

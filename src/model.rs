@@ -447,8 +447,12 @@ impl Preferences {
             .phrase_subtitle_pct
             .clamp(PHRASE_PCT_MIN, PHRASE_PCT_MAX);
         // Discard unsupported saved row sources while preserving linked media services.
-        self.stacks
-            .retain(|stack| matches!(stack.source.as_str(), "moonlight" | "jellyfin" | "plex"));
+        self.stacks.retain(|stack| {
+            matches!(
+                stack.source.as_str(),
+                "moonlight" | "jellyfin" | "plex" | "stremio"
+            )
+        });
         let catalog = crate::video_catalog::all();
         self.video_excluded
             .retain(|id| catalog.iter().any(|v| &v.id == id));

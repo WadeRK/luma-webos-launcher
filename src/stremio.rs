@@ -1,23 +1,16 @@
-//! Stremio for Home stacks. Unlike Jellyfin/Plex, there is no sign-in and no
-//! single library API: content comes from whichever addons the user has
-//! configured, each exposing a catalog over a small HTTP protocol. Luma only
-//! reads catalog metadata to populate stacks; playback is handed off to the
-//! installed Stremio app itself (see platform::Request::Launch), which lets
-//! the user pick the actual stream source the way they always do.
+//! Stremio integration for Home stacks. Reads local library and watch state
+//! from Stremio Origin on webOS, and fetches catalog metadata for trending
+//! and configured addons.
 use crate::stacks::StackItem;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-/// webOS app id for Stremio Origin. Confirmed via `ares-install --list`;
-/// change this if a different Stremio client is installed instead.
 pub const APP_ID: &str = "tv.stremioorigin.app";
 
-/// One configured addon. `collection` strings on a "stremio" stack encode
-/// `"<base_url>|<catalog_type>|<catalog_id>"` so no separate per-stack addon
-/// index is needed; see `parse_collection` below.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct StremioAddon {
@@ -25,9 +18,6 @@ pub struct StremioAddon {
     pub base_url: String,
 }
 
-/// Splits a stack's `collection` field into (base_url, catalog_type, catalog_id).
-/// Returns `None` for anything that doesn't match, so a malformed or
-/// not-yet-configured stack is skipped rather than panicking.
 pub fn parse_collection(collection: &str) -> Option<(String, String, String)> {
     let mut parts = collection.splitn(3, '|');
     let base_url = parts.next()?.to_string();
@@ -40,15 +30,12 @@ pub fn parse_collection(collection: &str) -> Option<(String, String, String)> {
 }
 
 pub enum Command {
-    /// Cards for (stack index, collection string).
     Fetch(Vec<(usize, String)>),
 }
 
 #[allow(dead_code)]
 pub enum Response {
     Items(usize, Vec<StackItem>),
-    /// A fetch failed; `usize` is the stack index so the UI can leave that
-    /// row's previous contents alone instead of clearing it.
     Failed(usize, String),
 }
 
@@ -84,33 +71,30 @@ impl Default for Service {
     }
 }
 
-/// Reserved id bit for Stremio cards. Jellyfin uses `1 << 52`, Plex uses
-/// `1 << 51`; this must not collide with either (or with any future source).
 const CARD_TAG: i64 = 1 << 50;
-static CARD_IDS: Mutex<BTreeMap<i64, String>> = Mutex::new(BTreeMap::new());
+static CARD_TARGETS: Mutex<BTreeMap<i64, (String, String)>> = Mutex::new(BTreeMap::new());
 
-/// Stremio ids are strings (IMDB-style "tt1254207" or addon-prefixed); the
-/// title card and card grid key everything by i64, so hash and tag like
-/// Jellyfin/Plex do. FNV-1a: stable across runs, so cached posters keep
-/// their file names.
-pub fn card_id(item: &str) -> i64 {
+pub fn card_id(media_type: &str, item_id: &str) -> i64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in item.bytes() {
+    for byte in item_id.bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     let id = (hash as i64 & (CARD_TAG - 1)) | CARD_TAG;
-    CARD_IDS.lock().unwrap().insert(id, item.to_owned());
+    CARD_TARGETS
+        .lock()
+        .unwrap()
+        .insert(id, (media_type.to_owned(), item_id.to_owned()));
     id
 }
 
-/// Whether a card id belongs to Stremio. There is no title-card flow for
-/// Stremio (see state.rs's Target::StackCard handling, which launches the
-/// app directly instead of calling open_movie), but this is kept for
-/// symmetry with jellyfin::owns/plex::owns and in case that changes later.
+pub fn target(id: i64) -> Option<(String, String)> {
+    CARD_TARGETS.lock().unwrap().get(&id).cloned()
+}
+
 #[allow(dead_code)]
 pub fn owns(id: i64) -> bool {
-    id & CARD_TAG != 0 && CARD_IDS.lock().unwrap().contains_key(&id)
+    id & CARD_TAG != 0 && CARD_TARGETS.lock().unwrap().contains_key(&id)
 }
 
 fn agent() -> ureq::Agent {
@@ -119,6 +103,113 @@ fn agent() -> ureq::Agent {
         .http_status_as_error(false)
         .build()
         .into()
+}
+
+fn load_stremio_state() -> Option<serde_json::Value> {
+    let path = Path::new(
+        "/media/developer/apps/usr/palm/applications/tv.stremioorigin.app/data/state.json",
+    );
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn fetch_continue() -> Vec<StackItem> {
+    let Some(data) = load_stremio_state() else {
+        return vec![];
+    };
+    let mut entries: Vec<(&serde_json::Value, &str, &str)> = Vec::new();
+    if let Some(lib) = data.get("lib").and_then(|v| v.as_object()) {
+        for (id, item) in lib {
+            if item
+                .get("removed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let time_offset = item
+                .pointer("/state/timeOffset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let duration = item
+                .pointer("/state/duration")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let last_watched = item
+                .pointer("/state/lastWatched")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if time_offset > 0 && (duration == 0 || time_offset < duration.saturating_sub(60_000)) {
+                entries.push((item, last_watched, id));
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.1.cmp(a.1));
+
+    entries
+        .into_iter()
+        .take(crate::stacks::HOME_ROW_MAX)
+        .map(|(item, _, id)| {
+            let title = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let poster = item
+                .get("poster")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let media_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("movie");
+            StackItem {
+                title,
+                poster,
+                id: card_id(media_type, id),
+            }
+        })
+        .collect()
+}
+
+fn fetch_library() -> Vec<StackItem> {
+    let Some(data) = load_stremio_state() else {
+        return vec![];
+    };
+    let mut entries: Vec<(&serde_json::Value, &str, &str)> = Vec::new();
+    if let Some(lib) = data.get("lib").and_then(|v| v.as_object()) {
+        for (id, item) in lib {
+            if item
+                .get("removed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let mtime = item.get("_mtime").and_then(|v| v.as_str()).unwrap_or("");
+            entries.push((item, mtime, id));
+        }
+    }
+    entries.sort_by(|a, b| b.1.cmp(a.1));
+
+    entries
+        .into_iter()
+        .take(crate::stacks::HOME_ROW_MAX)
+        .map(|(item, _, id)| {
+            let title = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let poster = item
+                .get("poster")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let media_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("movie");
+            StackItem {
+                title,
+                poster,
+                id: card_id(media_type, id),
+            }
+        })
+        .collect()
 }
 
 fn fetch_one(
@@ -151,10 +242,11 @@ fn fetch_one(
         .iter()
         .filter_map(|m| {
             let id_str = m["id"].as_str()?;
+            let media_type = m["type"].as_str().unwrap_or(catalog_type);
             Some(StackItem {
                 title: m["name"].as_str().unwrap_or_default().to_string(),
                 poster: m["poster"].as_str().map(str::to_string),
-                id: card_id(id_str),
+                id: card_id(media_type, id_str),
             })
         })
         .collect())
@@ -162,16 +254,44 @@ fn fetch_one(
 
 fn fetch(reply: &mpsc::Sender<Response>, wanted: Vec<(usize, String)>) {
     for (index, collection) in wanted {
-        let Some((base_url, catalog_type, catalog_id)) = parse_collection(&collection) else {
-            let _ = reply.send(Response::Failed(index, "Stack not configured".into()));
-            continue;
-        };
-        match fetch_one(&base_url, &catalog_type, &catalog_id) {
-            Ok(items) => {
+        match collection.as_str() {
+            "continue" => {
+                let items = fetch_continue();
                 let _ = reply.send(Response::Items(index, items));
             }
-            Err(message) => {
-                let _ = reply.send(Response::Failed(index, message));
+            "library" => {
+                let items = fetch_library();
+                let _ = reply.send(Response::Items(index, items));
+            }
+            "trending_movies" => match fetch_one("https://v3-cinemeta.strem.io", "movie", "top") {
+                Ok(items) => {
+                    let _ = reply.send(Response::Items(index, items));
+                }
+                Err(msg) => {
+                    let _ = reply.send(Response::Failed(index, msg));
+                }
+            },
+            "trending_series" => match fetch_one("https://v3-cinemeta.strem.io", "series", "top") {
+                Ok(items) => {
+                    let _ = reply.send(Response::Items(index, items));
+                }
+                Err(msg) => {
+                    let _ = reply.send(Response::Failed(index, msg));
+                }
+            },
+            custom => {
+                let Some((base_url, catalog_type, catalog_id)) = parse_collection(custom) else {
+                    let _ = reply.send(Response::Failed(index, "Stack not configured".into()));
+                    continue;
+                };
+                match fetch_one(&base_url, &catalog_type, &catalog_id) {
+                    Ok(items) => {
+                        let _ = reply.send(Response::Items(index, items));
+                    }
+                    Err(message) => {
+                        let _ = reply.send(Response::Failed(index, message));
+                    }
+                }
             }
         }
     }
@@ -203,10 +323,11 @@ mod tests {
 
     #[test]
     fn card_id_is_stable_and_tagged() {
-        let a = card_id("tt1254207");
-        let b = card_id("tt1254207");
+        let a = card_id("movie", "tt1254207");
+        let b = card_id("movie", "tt1254207");
         assert_eq!(a, b);
         assert!(owns(a));
         assert!(!owns(42));
+        assert_eq!(target(a), Some(("movie".into(), "tt1254207".into())));
     }
 }

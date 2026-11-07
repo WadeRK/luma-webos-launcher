@@ -284,6 +284,16 @@ fn effects(
                     }
                 }
             }
+            Effect::StremioLaunch(media_type, id) => {
+                if !state.launching {
+                    if platform.webos {
+                        state.launching = true;
+                        platform.send(Request::StremioLaunch(media_type, id));
+                    } else {
+                        state.notify(format!("Opening Stremio: {media_type}/{id}"));
+                    }
+                }
+            }
             Effect::Quit => return false,
             Effect::Weather(command) => weather.send(command),
             Effect::HomeAssistant(command) => home.send(command),
@@ -1885,6 +1895,7 @@ fn run() -> Result<(), String> {
         storage::load(&preferences_path)?
     };
     let mut state = State::new(initial_preferences);
+    stacks_refresh(&mut state);
     let _ = moonlight_service();
     // Desktop game-card mockup and game Home row, using synthetic preview entries.
     #[cfg(debug_assertions)]

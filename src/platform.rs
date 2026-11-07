@@ -34,6 +34,7 @@ pub fn redirect_to_home() -> Result<bool, String> {
 pub enum Request {
     Refresh,
     Launch(String),
+    StremioLaunch(String, String),
     MoonlightLaunch(crate::moonlight::MoonlightLink, i64),
     /// Close another app (best effort; webOS may refuse without root).
     CloseApp(String),
@@ -141,6 +142,20 @@ impl Platform {
                         }
                         continue;
                     }
+                    Request::StremioLaunch(media_type, id) => Response::Launched(if webos {
+                        call(
+                            "luna://com.webos.applicationManager/launch",
+                            json!({
+                                "id": crate::stremio::APP_ID,
+                                "params": {
+                                    "target": format!("stremio:///detail/{media_type}/{id}")
+                                }
+                            }),
+                        )
+                        .map(|_| ())
+                    } else {
+                        Ok(())
+                    }),
                     Request::Launch(id) => Response::Launched(if webos {
                         if crate::scroll_preview::is_placeholder(&id) {
                             Err("Scroll preview cards cannot be launched".into())

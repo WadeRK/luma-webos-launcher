@@ -340,6 +340,7 @@ pub enum Effect {
     /// Refresh apps: read the inventory and every app icon again.
     Reload,
     Launch(String),
+    StremioLaunch(String, String),
     Quit,
     Weather(weather::Command),
     HomeAssistant(crate::smart_home::Command),
@@ -3664,7 +3665,11 @@ impl State {
                 }
                 let items = self.stack_items.get(stack).map_or(&[][..], Vec::as_slice);
                 if self.preferences.stacks[stack].source == "stremio" {
-                    // No title-card page: Stremio shows its own source picker.
+                    if let Some(item) = items.get(index) {
+                        if let Some((media_type, item_id)) = crate::stremio::target(item.id) {
+                            return vec![Effect::StremioLaunch(media_type, item_id)];
+                        }
+                    }
                     return vec![Effect::Launch(crate::stremio::APP_ID.into())];
                 }
 
@@ -3773,6 +3778,25 @@ impl State {
                 if !source.2 {
                     self.notify(format!("{} stacks are coming soon", source.1));
                     return vec![];
+                }
+                if source.0 == "stremio" {
+                    let first = !self
+                        .preferences
+                        .stacks
+                        .iter()
+                        .any(|s| s.source == "stremio");
+                    let mut stack = crate::stacks::StackConfig {
+                        source: "stremio".into(),
+                        collection: if first { "continue" } else { "trending_movies" }.into(),
+                        ..Default::default()
+                    };
+                    stack.name = crate::stacks::row_title(&stack);
+                    self.preferences.stacks.push(stack);
+                    self.stack_items.push(vec![]);
+                    let i = self.preferences.stacks.len() - 1;
+                    self.settings_level = SettingsLevel::Section;
+                    self.settings_push(SettingsLevel::StackConfig(i), Target::StackOpt(0));
+                    return vec![Effect::Save, Effect::StacksRefresh];
                 }
                 if source.0 == "moonlight" && self.preferences.moonlight.paired {
                     let first = !self

@@ -9,7 +9,7 @@ use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-pub const APP_ID: &str = "tv.stremioorigin.app";
+pub const APP_ID: &str = "io.strem.tv";
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]

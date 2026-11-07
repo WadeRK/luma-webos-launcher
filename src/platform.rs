@@ -148,7 +148,7 @@ impl Platform {
                             json!({
                                 "id": crate::stremio::APP_ID,
                                 "params": {
-                                    "target": format!("stremio:///detail/{media_type}/{id}")
+                                    "target": format!("#/detail/{media_type}/{id}")
                                 }
                             }),
                         )

@@ -3665,10 +3665,11 @@ impl State {
                 }
                 let items = self.stack_items.get(stack).map_or(&[][..], Vec::as_slice);
                 if self.preferences.stacks[stack].source == "stremio" {
-                    if let Some(item) = items.get(index) {
-                        if let Some((media_type, item_id)) = crate::stremio::target(item.id) {
-                            return vec![Effect::StremioLaunch(media_type, item_id)];
-                        }
+                    if let Some((media_type, item_id)) = items
+                        .get(index)
+                        .and_then(|item| crate::stremio::target(item.id))
+                    {
+                        return vec![Effect::StremioLaunch(media_type, item_id)];
                     }
                     return vec![Effect::Launch(crate::stremio::APP_ID.into())];
                 }

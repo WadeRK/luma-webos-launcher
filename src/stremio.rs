@@ -45,13 +45,13 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new() -> Self {
+    pub fn new(cache: std::path::PathBuf) -> Self {
         let (sender, commands) = mpsc::channel::<Command>();
         let (reply, receiver) = mpsc::channel();
         thread::spawn(move || {
             for command in commands {
                 match command {
-                    Command::Fetch(wanted) => fetch(&reply, wanted),
+                    Command::Fetch(wanted) => fetch(&reply, &cache, wanted),
                 }
             }
         });
@@ -62,12 +62,6 @@ impl Service {
     }
     pub fn send(&self, command: Command) {
         let _ = self.sender.lock().unwrap().send(command);
-    }
-}
-
-impl Default for Service {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -105,6 +99,55 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+struct RawItem {
+    title: String,
+    poster_url: Option<String>,
+    id: i64,
+}
+
+fn process_items(
+    agent: &ureq::Agent,
+    cache: &Path,
+    raw_items: Vec<RawItem>,
+    reply: &mpsc::Sender<Response>,
+    index: usize,
+) {
+    let _ = std::fs::create_dir_all(cache);
+    let mut cards: Vec<StackItem> = raw_items
+        .iter()
+        .map(|r| {
+            let cached = cache.join(format!("stremio-{}.jpg", r.id));
+            let poster = cached
+                .exists()
+                .then(|| cached.to_string_lossy().into_owned());
+            StackItem {
+                title: r.title.clone(),
+                poster,
+                id: r.id,
+            }
+        })
+        .collect();
+
+    let _ = reply.send(Response::Items(index, cards.clone()));
+
+    let mut any_new = false;
+    for (card, raw) in cards.iter_mut().zip(&raw_items) {
+        if card.poster.is_none() {
+            if let Some(ref url) = raw.poster_url {
+                card.poster =
+                    crate::media::download_as(agent, cache, &format!("stremio-{}", card.id), url);
+                if card.poster.is_some() {
+                    any_new = true;
+                }
+            }
+        }
+    }
+
+    if any_new {
+        let _ = reply.send(Response::Items(index, cards));
+    }
+}
+
 fn load_stremio_state() -> Option<serde_json::Value> {
     let path = Path::new(
         "/media/developer/apps/usr/palm/applications/tv.stremioorigin.app/data/state.json",
@@ -113,7 +156,7 @@ fn load_stremio_state() -> Option<serde_json::Value> {
     serde_json::from_str(&content).ok()
 }
 
-fn fetch_continue() -> Vec<StackItem> {
+fn fetch_continue() -> Vec<RawItem> {
     let Some(data) = load_stremio_state() else {
         return vec![];
     };
@@ -155,21 +198,21 @@ fn fetch_continue() -> Vec<StackItem> {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let poster = item
+            let poster_url = item
                 .get("poster")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let media_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("movie");
-            StackItem {
+            RawItem {
                 title,
-                poster,
+                poster_url,
                 id: card_id(media_type, id),
             }
         })
         .collect()
 }
 
-fn fetch_library() -> Vec<StackItem> {
+fn fetch_library() -> Vec<RawItem> {
     let Some(data) = load_stremio_state() else {
         return vec![];
     };
@@ -198,14 +241,14 @@ fn fetch_library() -> Vec<StackItem> {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let poster = item
+            let poster_url = item
                 .get("poster")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let media_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("movie");
-            StackItem {
+            RawItem {
                 title,
-                poster,
+                poster_url,
                 id: card_id(media_type, id),
             }
         })
@@ -213,15 +256,16 @@ fn fetch_library() -> Vec<StackItem> {
 }
 
 fn fetch_one(
+    agent: &ureq::Agent,
     base_url: &str,
     catalog_type: &str,
     catalog_id: &str,
-) -> Result<Vec<StackItem>, String> {
+) -> Result<Vec<RawItem>, String> {
     let url = format!(
         "{}/catalog/{catalog_type}/{catalog_id}.json",
         base_url.trim_end_matches('/')
     );
-    let mut response = agent()
+    let mut response = agent
         .get(&url)
         .call()
         .map_err(|e| format!("{base_url}: {e}"))?;
@@ -240,53 +284,59 @@ fn fetch_one(
 
     Ok(metas
         .iter()
+        .take(crate::stacks::HOME_ROW_MAX)
         .filter_map(|m| {
             let id_str = m["id"].as_str()?;
             let media_type = m["type"].as_str().unwrap_or(catalog_type);
-            Some(StackItem {
+            Some(RawItem {
                 title: m["name"].as_str().unwrap_or_default().to_string(),
-                poster: m["poster"].as_str().map(str::to_string),
+                poster_url: m["poster"].as_str().map(str::to_string),
                 id: card_id(media_type, id_str),
             })
         })
         .collect())
 }
 
-fn fetch(reply: &mpsc::Sender<Response>, wanted: Vec<(usize, String)>) {
+fn fetch(reply: &mpsc::Sender<Response>, cache: &Path, wanted: Vec<(usize, String)>) {
+    let agent = agent();
     for (index, collection) in wanted {
         match collection.as_str() {
             "continue" => {
                 let items = fetch_continue();
-                let _ = reply.send(Response::Items(index, items));
+                process_items(&agent, cache, items, reply, index);
             }
             "library" => {
                 let items = fetch_library();
-                let _ = reply.send(Response::Items(index, items));
+                process_items(&agent, cache, items, reply, index);
             }
-            "trending_movies" => match fetch_one("https://v3-cinemeta.strem.io", "movie", "top") {
-                Ok(items) => {
-                    let _ = reply.send(Response::Items(index, items));
+            "trending_movies" => {
+                match fetch_one(&agent, "https://v3-cinemeta.strem.io", "movie", "top") {
+                    Ok(items) => {
+                        process_items(&agent, cache, items, reply, index);
+                    }
+                    Err(msg) => {
+                        let _ = reply.send(Response::Failed(index, msg));
+                    }
                 }
-                Err(msg) => {
-                    let _ = reply.send(Response::Failed(index, msg));
+            }
+            "trending_series" => {
+                match fetch_one(&agent, "https://v3-cinemeta.strem.io", "series", "top") {
+                    Ok(items) => {
+                        process_items(&agent, cache, items, reply, index);
+                    }
+                    Err(msg) => {
+                        let _ = reply.send(Response::Failed(index, msg));
+                    }
                 }
-            },
-            "trending_series" => match fetch_one("https://v3-cinemeta.strem.io", "series", "top") {
-                Ok(items) => {
-                    let _ = reply.send(Response::Items(index, items));
-                }
-                Err(msg) => {
-                    let _ = reply.send(Response::Failed(index, msg));
-                }
-            },
+            }
             custom => {
                 let Some((base_url, catalog_type, catalog_id)) = parse_collection(custom) else {
                     let _ = reply.send(Response::Failed(index, "Stack not configured".into()));
                     continue;
                 };
-                match fetch_one(&base_url, &catalog_type, &catalog_id) {
+                match fetch_one(&agent, &base_url, &catalog_type, &catalog_id) {
                     Ok(items) => {
-                        let _ = reply.send(Response::Items(index, items));
+                        process_items(&agent, cache, items, reply, index);
                     }
                     Err(message) => {
                         let _ = reply.send(Response::Failed(index, message));

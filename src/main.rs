@@ -871,7 +871,14 @@ fn compose(
 
 fn stremio_service() -> &'static stremio::Service {
     static SERVICE: std::sync::OnceLock<stremio::Service> = std::sync::OnceLock::new();
-    SERVICE.get_or_init(stremio::Service::new)
+    SERVICE.get_or_init(|| {
+        let cache = if std::path::Path::new("/media/developer/com.denisefremov.luma").exists() {
+            std::path::PathBuf::from("/media/developer/com.denisefremov.luma/posters")
+        } else {
+            std::env::temp_dir().join("luma-posters")
+        };
+        stremio::Service::new(cache)
+    })
 }
 
 fn jellyfin_service() -> &'static jellyfin::Service {
